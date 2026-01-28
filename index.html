@@ -1,0 +1,282 @@
+<span id="fps_label" style="display: block;">0 fps</span>
+<canvas id="canvas" width="720" height="480" style="image-rendering: pixelated;" />
+<script type="module">
+let wasm, gl, al;
+const gl_textures = [], al_wavs = [];
+
+function unwrap_bigint(n) {
+  if (n < Number.MIN_SAFE_INTEGER || n > Number.MAX_SAFE_INTEGER) {
+    throw Error(`Can't unwrap bitint ${n}`);
+  }
+  return Number(n)
+}
+
+function gl_create_shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw gl.getShaderInfoLog(s);
+  }
+  return s;
+}
+
+function gl_create_program(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, gl_create_shader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, gl_create_shader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw gl.getProgramInfoLog(p);
+  }
+  return p;
+}
+
+function gl_init() {
+  gl = canvas.getContext("webgl", { alpha: false });
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  if (gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS < 1000) {
+    console.warn("MAX_COMBINED_TEXTURE_IMAGE_UNITS is unusually low");
+  }
+
+  const vertex_shader = `
+    attribute vec2 aPos;
+    attribute vec2 aUV;
+    varying vec2 vUV;
+    void main() {
+      vec2 pos = aPos * 2.0 - 1.0;
+      gl_Position = vec4(pos * vec2(1, -1), 0, 1);
+      vUV = aUV;
+    }
+  `;
+
+  const fragment_shader = `
+    precision mediump float;
+    uniform sampler2D uTex;
+    varying vec2 vUV;
+    void main() {
+      gl_FragColor = texture2D(uTex, vUV);
+    }
+  `;
+
+  const program = gl_create_program(vertex_shader, fragment_shader);
+  gl.useProgram(program);
+
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+  const aPos = gl.getAttribLocation(program, "aPos");
+  const aUV = gl.getAttribLocation(program, "aUV");
+  gl.enableVertexAttribArray(aPos);
+  gl.enableVertexAttribArray(aUV);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+
+	gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  gl.clearColor(0, 0, 0, 1);
+}
+
+function plat_log(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.log(msg);
+}
+
+function plat_warn(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.warn(msg);
+}
+
+function plat_error(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.error(msg);
+}
+
+function plat_time() {
+  // will get out of safe js integers in a few hundred year
+  return BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000));
+}
+
+function plat_reserve(start, len) {
+  const mem = wasm.instance.exports.memory;
+  const bytes_to_reserve = start + len - mem.buffer.byteLength;
+  const pages_to_reserve = Math.ceil(bytes_to_reserve / (64 << 10));
+  if (pages_to_reserve > 0) {
+    mem.grow(pages_to_reserve);
+  }
+}
+
+function gl_set_resolution(width, height) {
+  canvas.width = width;
+  canvas.height = height;
+  gl.viewport(0, 0, width, height);
+}
+
+function gl_clear_screen() {
+  // gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+function gl_texture_create(buf, width, height) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8ClampedArray(mem, buf, 4 * width * height);
+  const image = new ImageData(bytes, width, height);
+
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  // I don't realy know what that line does
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+
+  gl_textures.push(texture);
+  return gl_textures.length - 1;
+}
+
+function gl_texture_destroy(texture_id) {
+  gl.deleteTexture(gl_textures[texture_id]);
+}
+
+
+const verts = new Float32Array(6 * 4);
+function gl_draw_sprite(sprite) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const view = new DataView(mem, sprite, 28);
+  const x = view.getInt32(0, true) / canvas.width;
+  const y = view.getInt32(4, true) / canvas.height;
+  const width = view.getInt32(8, true) / canvas.width;
+  const height = view.getInt32(12, true) / canvas.height;
+  const uv_x = view.getInt32(16, true);
+  const uv_y = view.getInt32(20, true);
+  const texture_id = view.getUint32(24, true);
+
+  // TODO: change
+  const u0 = 0;
+  const v0 = 0;
+  const u1 = 1;
+  const v1 = 1;
+
+  const texture = gl_textures[texture_id];
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+
+  verts.set([
+    x, y, u0, v0,
+    x + width, y, u1, v0,
+    x, y + height, u0, v1,
+
+    x, y + height, u0, v1,
+    x + width, y, u1, v0,
+    x + width, y + height, u1, v1,
+  ], 0);
+
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function al_init() {
+  al = new AudioContext();
+
+  // NOTE: browser require a user gesture to start the audio context
+  // const keydown_handler = () => {
+  //   al.resume();
+  //   window.removeEventListener("keydown", keydown_handler);
+  // };
+  // const mousedown_handler = () => {
+  //   al.resume();
+  //   window.removeEventListener("mousedown", mousedown_handler);
+  // };
+  // window.addEventListener("keydown", mousedown_handler);
+  // window.addEventListener("mousedown", keydown_handler);
+}
+
+function al_wav_create(buf, buf_len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  // PERF: a copy of the al file is done here
+  const bytes = mem.slice(buf, buf + buf_len);
+  al_wavs.push(al.decodeAudioData(bytes));
+  return al_wavs.length - 1;
+}
+
+async function al_wav_destroy(wav_id) {
+  delete al_wavs[wav_id];
+}
+
+async function al_wav_play(wav_id) {
+  if (al.state != "running") {
+    console.warn(`wav ${wav_id} was not played because audio context is not running`);
+    return;
+  }
+  const buffer = await al_wavs[wav_id];
+  const source = al.createBufferSource();
+  source.buffer = buffer;
+  source.connect(al.destination);
+  source.start();
+}
+
+wasm = await WebAssembly.instantiateStreaming(
+  fetch("./out.wasm"),
+  {
+    env: {
+      plat_log: plat_log,
+      plat_warn: plat_warn,
+      plat_error: plat_error,
+      plat_time: plat_time,
+      plat_reserve: plat_reserve,
+
+      gl_set_resolution: gl_set_resolution,
+      gl_texture_create: gl_texture_create,
+      gl_texture_destroy: gl_texture_destroy,
+      gl_draw_sprite: gl_draw_sprite,
+      gl_clear_screen: gl_clear_screen,
+
+      al_wav_create: al_wav_create,
+      al_wav_play: al_wav_play,
+    }
+  }
+);
+
+let fps_i = 0;
+let fps_t = 0;
+function game_update() {
+  fps_i += 1;
+  if (fps_i % 30 == 0) {
+    const d = performance.now() - fps_t;
+    fps_t = performance.now();
+    fps_label.innerText = `${Math.round(1 / (d / 1000 / 30) * 100) / 100} fps`;
+  }
+
+  wasm.instance.exports.game_update();
+  requestAnimationFrame(game_update);
+}
+
+function main() {
+  fps_t = performance.now();
+  al_init();
+  gl_init();
+  wasm.instance.exports.game_init();
+  game_update();
+}
+
+const keydown_handler = () => {
+  main();
+  window.removeEventListener("keydown", keydown_handler);
+};
+const mousedown_handler = () => {
+  main();
+  window.removeEventListener("mousedown", mousedown_handler);
+};
+window.addEventListener("keydown", mousedown_handler);
+window.addEventListener("mousedown", keydown_handler);
+
+</script>

@@ -1,0 +1,5 @@
+--target=wasm32
+-nostdlib
+-std=c99
+-Wall
+-Wextra
