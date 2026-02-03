@@ -1,8 +1,9 @@
 <span id="fps_label" style="display: block;">0 fps</span>
+<span id="state_tick_label" style="display: block;">state_tick: 0 us</span>
+<span id="frame_tick_label" style="display: block;">frame_tick: 0 us</span>
+<span id="audio_tick_label" style="display: block;">audio_tick: 0 us</span>
 <canvas id="canvas" width="720" height="480" style="image-rendering: pixelated;" />
 <script type="module">
-let wasm, gl, al;
-const gl_textures = [], al_wavs = [];
 
 function unwrap_bigint(n) {
   if (n < Number.MIN_SAFE_INTEGER || n > Number.MAX_SAFE_INTEGER) {
@@ -10,6 +11,47 @@ function unwrap_bigint(n) {
   }
   return Number(n)
 }
+
+function plat_log(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.log(msg);
+}
+
+function plat_warn(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.warn(msg);
+}
+
+function plat_error(buf, len) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
+  const msg = new TextDecoder().decode(bytes);
+  console.error(msg);
+}
+
+function plat_time() {
+  // will get out of safe js integers in a few hundred year
+  return BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000));
+}
+
+function plat_reserve(start, len) {
+  const mem = wasm.instance.exports.memory;
+  const bytes_to_reserve = start + len - mem.buffer.byteLength;
+  const pages_to_reserve = Math.ceil(bytes_to_reserve / (64 << 10));
+  if (pages_to_reserve > 0) {
+    mem.grow(pages_to_reserve);
+  }
+}
+
+
+// Graphics Lib ///////////////////////////////////////////////////////////////
+
+let gl;
+const gl_textures = []; 
 
 function gl_create_shader(type, src) {
   const s = gl.createShader(type);
@@ -79,41 +121,6 @@ function gl_init() {
   gl.clearColor(0, 0, 0, 1);
 }
 
-function plat_log(buf, len) {
-  const mem = wasm.instance.exports.memory.buffer;
-  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
-  const msg = new TextDecoder().decode(bytes);
-  console.log(msg);
-}
-
-function plat_warn(buf, len) {
-  const mem = wasm.instance.exports.memory.buffer;
-  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
-  const msg = new TextDecoder().decode(bytes);
-  console.warn(msg);
-}
-
-function plat_error(buf, len) {
-  const mem = wasm.instance.exports.memory.buffer;
-  const bytes = new Uint8Array(mem, buf, unwrap_bigint(len));
-  const msg = new TextDecoder().decode(bytes);
-  console.error(msg);
-}
-
-function plat_time() {
-  // will get out of safe js integers in a few hundred year
-  return BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000));
-}
-
-function plat_reserve(start, len) {
-  const mem = wasm.instance.exports.memory;
-  const bytes_to_reserve = start + len - mem.buffer.byteLength;
-  const pages_to_reserve = Math.ceil(bytes_to_reserve / (64 << 10));
-  if (pages_to_reserve > 0) {
-    mem.grow(pages_to_reserve);
-  }
-}
-
 function gl_set_resolution(width, height) {
   canvas.width = width;
   canvas.height = height;
@@ -175,6 +182,7 @@ function gl_draw_sprite(sprite) {
     x + width, y, u1, v0,
     x, y + height, u0, v1,
 
+    
     x, y + height, u0, v1,
     x + width, y, u1, v0,
     x + width, y + height, u1, v1,
@@ -184,45 +192,77 @@ function gl_draw_sprite(sprite) {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-function al_init() {
-  al = new AudioContext();
 
-  // NOTE: browser require a user gesture to start the audio context
-  // const keydown_handler = () => {
-  //   al.resume();
-  //   window.removeEventListener("keydown", keydown_handler);
-  // };
-  // const mousedown_handler = () => {
-  //   al.resume();
-  //   window.removeEventListener("mousedown", mousedown_handler);
-  // };
-  // window.addEventListener("keydown", mousedown_handler);
-  // window.addEventListener("mousedown", keydown_handler);
+// Audio Lib //////////////////////////////////////////////////////////////////
+
+const AL_RATE = 32000;
+const AL_BATCH_SIZE = 2048;
+// If you change AL_RING_BUFFER_CAPACITY you need change it also in
+// wasm-audio-processor.js
+const AL_RING_BUFFER_CAPACITY = 65;
+
+let al;
+const al_ring_buffer = al_ring_buffer_create();
+
+function al_ring_buffer_create() {
+  return new SharedArrayBuffer(8 + 256 * 4 * AL_RING_BUFFER_CAPACITY);
 }
 
-function al_wav_create(buf, buf_len) {
-  const mem = wasm.instance.exports.memory.buffer;
-  // PERF: a copy of the al file is done here
-  const bytes = mem.slice(buf, buf + buf_len);
-  al_wavs.push(al.decodeAudioData(bytes));
-  return al_wavs.length - 1;
-}
+function al_ring_buffer_write(ring_buffer, first_channel, second_channel) {
+  const cap = AL_RING_BUFFER_CAPACITY;
 
-async function al_wav_destroy(wav_id) {
-  delete al_wavs[wav_id];
-}
+  const head = new Uint32Array(ring_buffer, 0, 2)
+  const body = new Float32Array(ring_buffer, 8, 256 * cap);
+  const end = Atomics.load(head, 1);
+  const start = Atomics.load(head, 0);
 
-async function al_wav_play(wav_id) {
-  if (al.state != "running") {
-    console.warn(`wav ${wav_id} was not played because audio context is not running`);
-    return;
+  if ((end + 1) % cap == start) {
+    // NOTE: this is not completely safe but idc
+    Atomics.store(head, 0, (start + 1) % cap);
   }
-  const buffer = await al_wavs[wav_id];
-  const source = al.createBufferSource();
-  source.buffer = buffer;
-  source.connect(al.destination);
-  source.start();
+  body.set(first_channel, end * 256 + 0);
+  body.set(second_channel, end * 256 + 128);
+  Atomics.store(head, 1, (end + 1) % cap);
 }
+
+class WasmAudioNode extends AudioWorkletNode {
+  constructor(context, ring_buffer) {
+    super(context, 'wasm-audio-processor', { outputChannelCount: [2] });
+    this.ring_buffer = ring_buffer;
+    this.port.postMessage(ring_buffer);
+  }
+}
+
+async function al_init() {
+  // NOTE: the browser require a user gesture (click or keyboard) to allow the
+  // starting the audio context
+  al = new AudioContext({ sampleRate: AL_RATE });
+
+  al.audioWorklet.addModule('./wasm-audio-processor.js').then(() => {
+    const node = new WasmAudioNode(al, al_ring_buffer);
+    node.connect(al.destination);
+  });
+}
+
+// pushes AL_BATCH_SIZE audio smaples from each channels to the host
+// `first_channel` and `second_channel` can be equal
+function al_push_samples(first_channel, second_channel) {
+  const mem = wasm.instance.exports.memory.buffer;
+  const first_channel_samples = new Float32Array(mem, first_channel, AL_BATCH_SIZE);
+  const second_channel_samples = new Float32Array(mem, second_channel, AL_BATCH_SIZE);
+  for (let i = 0; i < AL_BATCH_SIZE/128; ++i) {
+    al_ring_buffer_write(
+      al_ring_buffer,
+      first_channel_samples.subarray(i*128, i*128 + 128),
+      second_channel_samples.subarray(i*128, i*128 + 128)
+    );
+  }
+}
+
+
+// Wasm ///////////////////////////////////////////////////////////////////////
+
+let wasm;
 
 wasm = await WebAssembly.instantiateStreaming(
   fetch("./out.wasm"),
@@ -240,43 +280,65 @@ wasm = await WebAssembly.instantiateStreaming(
       gl_draw_sprite: gl_draw_sprite,
       gl_clear_screen: gl_clear_screen,
 
-      al_wav_create: al_wav_create,
-      al_wav_play: al_wav_play,
+      al_push_samples: al_push_samples,
     }
   }
 );
 
-let fps_i = 0;
-let fps_t = 0;
-function game_update() {
+let fps_i = 0, fps_t = 0;
+let frame_tick_i = 0, frame_tick_t = 0;
+function game_frame_tick() {
   fps_i += 1;
   if (fps_i % 30 == 0) {
-    const d = performance.now() - fps_t;
-    fps_t = performance.now();
+    const now = performance.now();
+    const d = now - fps_t;
+    fps_t = now;
     fps_label.innerText = `${Math.round(1 / (d / 1000 / 30) * 100) / 100} fps`;
   }
 
-  wasm.instance.exports.game_update();
-  requestAnimationFrame(game_update);
+  frame_tick_i += 1;
+  if (frame_tick_i % 30 == 0) {
+    frame_tick_label.innerText = `frame_tick: ${Math.round(frame_tick_t * 1000 / 30)} us`;
+    frame_tick_t = 0;
+  }
+
+  const frame_tick_start = performance.now();
+  wasm.instance.exports.game_frame_tick();
+  const frame_tick_end = performance.now();
+  frame_tick_t += frame_tick_end - frame_tick_start;
+
+  requestAnimationFrame(game_frame_tick);
 }
 
+let audio_tick_i = 0, audio_tick_t = 0;
+function game_audio_tick() {
+  audio_tick_i += 1;
+  if (audio_tick_i % 15 == 0) {
+    audio_tick_label.innerText = `audio_tick: ${Math.round(audio_tick_t * 1000 / 15)} us`;
+    audio_tick_t = 0;
+  }
+
+  const audio_tick_start = performance.now();
+  wasm.instance.exports.game_audio_tick();
+  const audio_tick_end = performance.now();
+  audio_tick_t += audio_tick_end - audio_tick_start;
+}
+
+let has_main_started = false;
 function main() {
+  if (has_main_started) return;
+  has_main_started = true;
+
   fps_t = performance.now();
   al_init();
   gl_init();
   wasm.instance.exports.game_init();
-  game_update();
+
+  game_frame_tick();
+  setInterval(game_audio_tick, 64);  // 64 = 1/AL_RATE*AL_BATCH_SIZE*1000
 }
 
-const keydown_handler = () => {
-  main();
-  window.removeEventListener("keydown", keydown_handler);
-};
-const mousedown_handler = () => {
-  main();
-  window.removeEventListener("mousedown", mousedown_handler);
-};
-window.addEventListener("keydown", mousedown_handler);
-window.addEventListener("mousedown", keydown_handler);
+window.addEventListener("keydown", main, {once: true});
+window.addEventListener("mousedown", main, {once: true});
 
 </script>

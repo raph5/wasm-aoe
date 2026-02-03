@@ -9,7 +9,8 @@ void plat_panic(void) {
 extern unsigned char __heap_base;
 void *bump_pointer = &__heap_base;
 void *plat_alloc(usize size) {
-  // TODO: checkfor warp
+  assert((u64) bump_pointer + (u64) size <= UINT32_MAX);
+  bump_pointer = ALIGN(bump_pointer, 8);
   void *p = bump_pointer;
   plat_reserve(p, size);
   bump_pointer += size;
@@ -336,7 +337,7 @@ usize fmt_serialize_f64_exponent(i32 exponent, u8 *out) {
   }
 
   u8 buf[3];
-  usize i = 2;
+  isize i = 2;
   while (exponent != 0) {
     buf[i--] = '0' + exponent % 10;
     exponent /= 10;
@@ -719,9 +720,17 @@ void *arena_push(Arena *arena, usize size) {
     }
   }
 
-  void *buf = arena->block_mem + arena->block_pos;
+  void *buf = arena->block_mem[arena->block_idx] + arena->block_pos;
   arena->block_pos += size;
   return buf;
+}
+
+void *arena_push_aligned(Arena *arena, usize size, usize alignement) {
+  usize offset = arena->block_pos % alignement;
+  if (offset != 0) {
+    arena_push(arena, alignement - offset);
+  }
+  return arena_push(arena, size);
 }
 
 void arena_pop_to(Arena *arena, isize block_idx, usize block_pos) {

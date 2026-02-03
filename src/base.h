@@ -37,12 +37,21 @@ typedef i32 isize;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
+#define ALIGN(p, n) ((void *) (((uintptr_t) (p) + (n) - 1) & ~(uintptr_t) ((n) - 1)))
+
 #define static_assert _Static_assert
 
 // Vector /////////////////////////////////////////////////////////////////////
 typedef struct {
   u8 r, g, b;  
 } Color;
+
+// Math ///////////////////////////////////////////////////////////////////////
+static inline f32 f32_abs(f32 x) {
+    union { f32 f; u32 i; } u = { x };
+    u.i &= 0x7fffffff;
+    return u.f;
+}
 
 // IO /////////////////////////////////////////////////////////////////////////
 extern void plat_log(u8 *buf, usize len);
@@ -68,9 +77,12 @@ extern void gl_draw_sprite(gl_sprite *sprite);
 extern void gl_clear_screen(void);
 
 // Sounds /////////////////////////////////////////////////////////////////////
-extern u32 al_wav_create(u8 *buf, u32 buf_len);  // take wav file, return a wav id
-extern void al_wav_destroy(u32 wav_id);
-extern void al_wav_play(u32 wav_id);
+#define AL_RATE 32000
+#define AL_BATCH_SIZE 2048
+
+// pushes 2048 audio smaples from each channels to the host
+// `first_channel` and `second_channel` can be equal
+extern void al_push_samples(f32 *first_channel, f32 *second_channel);
 
 // Memory operations //////////////////////////////////////////////////////////
 void mem_cpy(void *dest, const void *src, usize len);
@@ -145,7 +157,7 @@ void log_error(const char *fmt, ...);
 // separate arenas as arguments to a function.
 
 #define ARENA_BLOCK_COUNT 128
-#define ARENA_BLOCK_SIZE MiB(16)
+#define ARENA_BLOCK_SIZE MiB(64)
 typedef struct {
   isize block_idx;
   usize block_pos;
@@ -162,6 +174,7 @@ Arena red_arena = { .block_idx = -1 };
 Arena blue_arena = { .block_idx = -1 };
 
 void *arena_push(Arena *arena, usize size);
+void *arena_push_aligned(Arena *arena, usize size, usize alignement);
 void arena_pop_to(Arena *arena, isize block_idx, usize block_pos);
 
 ArenaTemp arena_temp_get(Arena *arena);

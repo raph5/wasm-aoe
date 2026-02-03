@@ -1,7 +1,9 @@
 #include "src/base.h"
 #include "src/base.c"
-#include "src/ui.h"
-#include "src/ui.c"
+
+#include "src/lib/audio.h"
+#include "src/lib/audio.c"
+
 #include "src/assets/pack.h"
 #include "src/assets/pack.c"
 #include "src/assets/drs.h"
@@ -10,30 +12,29 @@
 #include "src/assets/pal.c"
 #include "src/assets/slp.h"
 #include "src/assets/slp.c"
+#include "src/assets/wav.h"
+#include "src/assets/wav.c"
 
+#include "src/ui.h"
+#include "src/ui.c"
 
 #define UI_EVENT_QUEUE_CAP 1024
 typedef struct {
   u64 time;
   // usize ui_event_queue_len;
   // UiEvent ui_event_queue[UI_EVENT_QUEUE_CAP];
-} GameUpdateInput;
+} GameStateTickInput;
 
-// TODO: remove that if empty later
-typedef struct {
-} GameUpdateOutput;
-
-GameUpdateInput game_input;
-GameUpdateOutput game_output;
-GameUpdateInput *game_input_ptr = &game_input;
-GameUpdateOutput *game_output_ptr = &game_output;
+GameStateTickInput game_state_tick_input;
+GameStateTickInput *game_state_tick_input_ptr = &game_state_tick_input;
 
 extern const unsigned char *binary_assets_start;
 extern const unsigned char *binary_assets_end;
 
 SlpHeader *slp;
 PalPalette *palette;
-u32 music_wav_id, bird_wav_id;
+Audio *bird_audio;
+AudioContext audio_context = { .source_count = 0 };
 
 void game_init(void) {
   Arena *arena = &blue_arena;
@@ -62,22 +63,23 @@ void game_init(void) {
   // usize bird_wav_file_len;
   // u8 *bird_wav_file = drs_file_get(sounds_drs_header, string8_static("5201.wav"), &bird_wav_file_len);
   usize bird_wav_file_len;
-  u8 *bird_wav_file = pack_file_get(pack_header, string8_static("game/sound/bird.wav"), &bird_wav_file_len);
-  bird_wav_id = al_wav_create(bird_wav_file, bird_wav_file_len);
+  u8 *bird_wav_file = pack_file_get(pack_header, string8_static("game/sound/taunt008.wav"), &bird_wav_file_len);
+  WavHeader *bird_wav = wav_parse_header(arena, bird_wav_file, bird_wav_file_len);
+  Audio *bird_decoded = wav_decode(arena, bird_wav);
+  bird_audio = audio_resample(arena, bird_decoded, AL_RATE);
 
-  usize music_wav_file_len;
-  u8 *music_wav_file = pack_file_get(pack_header, string8_static("game/sound/music1.mid"), &music_wav_file_len);
-  music_wav_id = al_wav_create(music_wav_file, music_wav_file_len);
+  // usize music_wav_file_len;
+  // u8 *music_wav_file = pack_file_get(pack_header, string8_static("game/sound/music1.mid"), &music_wav_file_len);
 
   gl_set_resolution(640, 480);
 }
 
 usize i = 0;
-void game_update(void) {
+void game_frame_tick(void) {
   ArenaTemp temp = arena_temp_get(&blue_arena);
 
-  if (i == 50) {
-    al_wav_play(bird_wav_id);
+  if (i == 10) {
+    audio_context_play(&audio_context, bird_audio, 1);
   }
 
   // usize frame_index = 0;
@@ -101,4 +103,13 @@ void game_update(void) {
   arena_temp_release(temp);
   gl_texture_destroy(texture_id);
   i += 1;
+}
+
+void game_audio_tick(void) {
+  ArenaTemp temp = arena_temp_get(&blue_arena);
+  audio_context_push_samples(temp.arena, &audio_context);
+  arena_temp_release(temp);
+}
+
+void game_state_tick(void) {
 }
