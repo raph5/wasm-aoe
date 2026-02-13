@@ -1,3 +1,10 @@
+/* Copyright (c) 2025, Raphaël Guyader
+ * All rights reserved.
+ *
+ * This source code is licensed under the GPL-3.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 #include "src/base.h"
 #include "src/base.c"
 
@@ -14,6 +21,10 @@
 #include "src/assets/slp.c"
 #include "src/assets/wav.h"
 #include "src/assets/wav.c"
+#include "src/assets/sf2.h"
+#include "src/assets/sf2.c"
+#include "src/assets/midi.h"
+#include "src/assets/midi.c"
 
 #include "src/ui.h"
 #include "src/ui.c"
@@ -33,7 +44,7 @@ extern const unsigned char *binary_assets_end;
 
 SlpHeader *slp;
 PalPalette *palette;
-Audio *bird_audio;
+Audio arrow_audio, taunt_audio;
 AudioContext audio_context = { .source_count = 0 };
 
 void game_init(void) {
@@ -60,16 +71,27 @@ void game_init(void) {
   palette = pal_parse(arena, palette_file, palette_file_len);
   slp = slp_parse_header(arena, wonder_slp_file, wonder_slp_file_len);
 
-  // usize bird_wav_file_len;
-  // u8 *bird_wav_file = drs_file_get(sounds_drs_header, string8_static("5201.wav"), &bird_wav_file_len);
-  usize bird_wav_file_len;
-  u8 *bird_wav_file = pack_file_get(pack_header, string8_static("game/sound/taunt008.wav"), &bird_wav_file_len);
-  WavHeader *bird_wav = wav_parse_header(arena, bird_wav_file, bird_wav_file_len);
-  Audio *bird_decoded = wav_decode(arena, bird_wav);
-  bird_audio = audio_resample(arena, bird_decoded, AL_RATE);
+  usize arrow_wav_file_len;
+  u8 *arrow_wav_file = drs_file_get(sounds_drs_header, string8_static("5020.wav"), &arrow_wav_file_len);
+  WavHeader *arrow_wav = wav_parse_header(arena, arrow_wav_file, arrow_wav_file_len);
+  Audio arrow_decoded = wav_decode(arena, arrow_wav);
+  arrow_audio = audio_resample(arena, arrow_decoded, AL_RATE, true);
 
-  // usize music_wav_file_len;
-  // u8 *music_wav_file = pack_file_get(pack_header, string8_static("game/sound/music1.mid"), &music_wav_file_len);
+  usize taunt_wav_file_len;
+  u8 *taunt_wav_file = pack_file_get(pack_header, string8_static("game/sound/taunt008.wav"), &taunt_wav_file_len);
+  WavHeader *taunt_wav = wav_parse_header(arena, taunt_wav_file, taunt_wav_file_len);
+  Audio taunt_decoded = wav_decode(arena, taunt_wav);
+  taunt_audio = audio_resample(arena, taunt_decoded, AL_RATE, true);
+
+  usize soundfont_file_len;
+  u8 *soundfont_file = pack_file_get(pack_header, string8_static("gm.sf2"), &soundfont_file_len);
+  Sf2Header *soundfont = sf2_parse_header(arena, soundfont_file, soundfont_file_len);
+
+  usize music_file_len;
+  u8 *music_file = pack_file_get(pack_header, string8_static("game/sound/music1.mid"), &music_file_len);
+  MidiHeader *music = midi_parse_header(arena, music_file, music_file_len);
+  log_print("music->track_count: %u32", music->track_count);
+  midi_print_track(music, 0);
 
   gl_set_resolution(640, 480);
 }
@@ -78,8 +100,11 @@ usize i = 0;
 void game_frame_tick(void) {
   ArenaTemp temp = arena_temp_get(&blue_arena);
 
-  if (i == 10) {
-    audio_context_play(&audio_context, bird_audio, 1);
+  if (i == 50) {
+    // audio_context_play(&audio_context, taunt_audio, 1);
+  }
+  if (i == 90) {
+    // audio_context_play(&audio_context, arrow_audio, 1);
   }
 
   // usize frame_index = 0;

@@ -5,15 +5,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#ifndef H_ASSETS_PAL
-#define H_ASSETS_PAL
+#ifndef H_ASSETS_SF2
+#define H_ASSETS_SF2
 
 #include "src/base.h"
 
 typedef struct {
-  u8 r[256], g[256], b[256];
-} PalPalette;
+  u8 *smpl_buf;
+  usize smpl_buf_len;
+} Sf2Header;
 
-PalPalette *pal_parse(Arena *arena, u8 *bin, usize bin_len);
+Sf2Header *sf2_parse_header(Arena *arena, u8 *bin, usize bin_len);
 
 #endif

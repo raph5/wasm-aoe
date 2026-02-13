@@ -1,5 +1,11 @@
+/* Copyright (c) 2025, Raphaël Guyader
+ * All rights reserved.
+ *
+ * This source code is licensed under the GPL-3.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 #include "src/assets/slp.h"
-#include "src/base.h"
 
 SlpRowOutline *slp_parse_outline_table(Arena *arena, u8 *bin, usize bin_len, i32 height) {
   SlpRowOutline *outline_table = arena_push(arena, height * sizeof(SlpRowOutline));

@@ -1,3 +1,9 @@
+/* Copyright (c) 2025, Raphaël Guyader
+ * All rights reserved.
+ *
+ * This source code is licensed under the GPL-3.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 #ifndef H_BASE
 #define H_BASE
@@ -184,6 +190,7 @@ ArenaTemp arena_scratch_get(Arena *permanent);
 void arena_scratch_release(ArenaTemp temp);
 
 // Binary data ////////////////////////////////////////////////////////////////
+u8 bin_read_byte(u8 **bin, usize *bin_len);
 void bin_read_bytes(u8 *out, usize len, u8 **bin, usize *bin_len);
 void bin_skip_bytes(usize len, u8 **bin, usize *bin_len);
 u16 bin_read_little_u16(u8 **bin, usize *bin_len);  // little endian

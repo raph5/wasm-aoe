@@ -1,3 +1,10 @@
+/* Copyright (c) 2025, Raphaël Guyader
+ * All rights reserved.
+ *
+ * This source code is licensed under the GPL-3.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 #include "base.h"
 
 // IO /////////////////////////////////////////////////////////////////////////
@@ -766,6 +773,14 @@ void arena_scratch_release(ArenaTemp temp) {
 }
 
 // Binary data ////////////////////////////////////////////////////////////////
+u8 bin_read_byte(u8 **bin, usize *bin_len) {
+  assert(*bin_len >= 1);
+  u8 n = **bin;
+  *bin += 1;
+  *bin_len -= 1;
+  return n;
+}
+
 void bin_read_bytes(u8 *out, usize len, u8 **bin, usize *bin_len) {
   assert(*bin_len >= len);
   mem_cpy(out, *bin, len);

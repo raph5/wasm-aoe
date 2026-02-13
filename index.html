@@ -1,3 +1,4 @@
+<!-- Web Runtime -->
 <span id="fps_label" style="display: block;">0 fps</span>
 <span id="state_tick_label" style="display: block;">state_tick: 0 us</span>
 <span id="frame_tick_label" style="display: block;">frame_tick: 0 us</span>
@@ -51,7 +52,7 @@ function plat_reserve(start, len) {
 // Graphics Lib ///////////////////////////////////////////////////////////////
 
 let gl;
-const gl_textures = []; 
+const gl_textures = [];
 
 function gl_create_shader(type, src) {
   const s = gl.createShader(type);
@@ -182,7 +183,7 @@ function gl_draw_sprite(sprite) {
     x + width, y, u1, v0,
     x, y + height, u0, v1,
 
-    
+
     x, y + height, u0, v1,
     x + width, y, u1, v0,
     x + width, y + height, u1, v1,
