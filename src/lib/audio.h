@@ -17,35 +17,44 @@ typedef struct {
   u32 sample_count;
   u32 channel_count;
 
-  // if Audio is mono buf simply stores the samples of the mono channel
-  // if Audio is stereo buf stores the samples of the two channels following
+  // if Sample is mono buf simply stores the samples of the mono channel
+  // if Sample is stereo buf stores the samples of the two channels following
   // this layout: AAAAAAAABBBBBBBB where A represent the samples of first
   // channel and B the samples of the second channel.
   f32 *buf;
+} Sample;
+
+Sample sample_alloc(Arena *arena, u32 sample_rate, u32 sample_count, u32 channel_count);
+Sample sample_resample_fast(Arena *arena, Sample input, u32 output_rate);
+// sample_resmaple uses the bandlimited intrepolation algorithm described in
+// docs/resample.pdf
+// This algorithme trims the first and last 13 samples from the original sample
+// out of the resampled sample. To avoid loosing these 13 samples you can set
+// `trim` to false. This will add 13 zeros and the start and the end of the
+// input sample. That way sample_resample will trim the 13 zeros instead of
+// trimming samples from the original sample.
+Sample sample_resample(Arena *arena, Sample input, u32 output_rate, b32 trim);
+
+typedef struct {
+  Sample sample;
+  u32 index;
 } Audio;
 
-Audio audio_alloc(Arena *arena, u32 sample_rate, u32 sample_count, u32 channel_count);
-Audio audio_resample_fast(Arena *arena, Audio input, u32 output_rate);
-// audio_resmaple uses the bandlimited intrepolation algorithm described in
-// docs/resample.pdf
-// This algorithme trims the first and last 13 samples from the original audio
-// out of the resampled audio. To avoid loosing these 13 samples you can set
-// `trim` to false. This will add 13 zeros and the start and the end of the
-// input audio. That way audio_resample will trim the 13 zeros instead of
-// trimming samples from the original audio.
-Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim);
-
-#define AUDIO_CONTEXT_CAP 512
 typedef struct {
-  usize source_count;
-  struct {
-    Audio audio;
-    f32 gain;
-    u32 index;  // the index of the next sample to be played
-  } source[AUDIO_CONTEXT_CAP];
+} Music;
+
+#define AC_AUDIO_CAP 512
+#define AC_MUSIC_CAP 8
+typedef struct {
+  u32 audio_count;
+  f32 audio_gain[AC_AUDIO_CAP];
+  Audio audio[AC_AUDIO_CAP];
+  u32 music_count;
+  f32 music_gain[AC_MUSIC_CAP];
+  Music music[AC_MUSIC_CAP];
 } AudioContext;
 
-void audio_context_play(AudioContext *context, Audio audio, f32 gain);
+void audio_context_play_audio(AudioContext *context, Audio audio, f32 gain);
 void audio_context_push_samples(Arena *arena, AudioContext *context);  // calls al_push_samples
 
 #endif

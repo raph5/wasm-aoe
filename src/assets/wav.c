@@ -56,17 +56,17 @@ WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len) {
   return header;
 }
 
-Audio wav_decode_mono_16_bits(Arena *arena, WavHeader *header) {
-  Audio audio = audio_alloc(arena, header->sample_rate, header->sample_count, header->channel_count);
+Sample wav_decode_mono_16_bits(Arena *arena, WavHeader *header) {
+  Sample sample = sample_alloc(arena, header->sample_rate, header->sample_count, header->channel_count);
   for (usize i = 0; i < header->sample_count; ++i) {
     // WAV data is little endian like wasm
     i16 n = ((i16 *) header->data)[i];
-    audio.buf[i] = (f32) n / 32768.0f / 2;
+    sample.buf[i] = (f32) n / 32768.0f / 2;
   }
-  return audio;
+  return sample;
 }
 
-Audio wav_decode(Arena *arena, WavHeader *header) {
+Sample wav_decode(Arena *arena, WavHeader *header) {
   if (header->channel_count == 1 && header->bits_per_sample == 16) {
     return wav_decode_mono_16_bits(arena, header);
   } else {

@@ -45,7 +45,7 @@ extern const unsigned char *binary_assets_end;
 SlpHeader *slp;
 PalPalette *palette;
 Audio arrow_audio, taunt_audio;
-AudioContext audio_context = { .source_count = 0 };
+AudioContext audio_context = {0};
 
 void game_init(void) {
   Arena *arena = &blue_arena;
@@ -74,14 +74,18 @@ void game_init(void) {
   usize arrow_wav_file_len;
   u8 *arrow_wav_file = drs_file_get(sounds_drs_header, string8_static("5020.wav"), &arrow_wav_file_len);
   WavHeader *arrow_wav = wav_parse_header(arena, arrow_wav_file, arrow_wav_file_len);
-  Audio arrow_decoded = wav_decode(arena, arrow_wav);
-  arrow_audio = audio_resample(arena, arrow_decoded, AL_RATE, true);
+  Sample arrow_decoded = wav_decode(arena, arrow_wav);
+  arrow_audio = (Audio) {
+    .sample = sample_resample(arena, arrow_decoded, AL_RATE, true),
+  };
 
   usize taunt_wav_file_len;
   u8 *taunt_wav_file = pack_file_get(pack_header, string8_static("game/sound/taunt008.wav"), &taunt_wav_file_len);
   WavHeader *taunt_wav = wav_parse_header(arena, taunt_wav_file, taunt_wav_file_len);
-  Audio taunt_decoded = wav_decode(arena, taunt_wav);
-  taunt_audio = audio_resample(arena, taunt_decoded, AL_RATE, true);
+  Sample taunt_decoded = wav_decode(arena, taunt_wav);
+  taunt_audio = (Audio) {
+    .sample = sample_resample(arena, taunt_decoded, AL_RATE, true),
+  };
 
   usize soundfont_file_len;
   u8 *soundfont_file = pack_file_get(pack_header, string8_static("gm.sf2"), &soundfont_file_len);
@@ -101,10 +105,10 @@ void game_frame_tick(void) {
   ArenaTemp temp = arena_temp_get(&blue_arena);
 
   if (i == 50) {
-    // audio_context_play(&audio_context, taunt_audio, 1);
+    // audio_context_play_audio(&audio_context, taunt_audio, 1);
   }
   if (i == 90) {
-    // audio_context_play(&audio_context, arrow_audio, 1);
+    audio_context_play_audio(&audio_context, arrow_audio, 1);
   }
 
   // usize frame_index = 0;

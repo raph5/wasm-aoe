@@ -20,6 +20,6 @@ typedef struct {
 } WavHeader;
 
 WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len);
-Audio wav_decode(Arena *arena, WavHeader *header);
+Sample wav_decode(Arena *arena, WavHeader *header);
 
 #endif

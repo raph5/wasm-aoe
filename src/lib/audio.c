@@ -5,11 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// TODO: assert mono everywhere
+// TODO: add yeild patern
+
 #include "src/lib/audio.h"
 
-Audio audio_alloc(Arena *arena, u32 sample_rate, u32 sample_count, u32 channel_count) {
+Sample sample_alloc(Arena *arena, u32 sample_rate, u32 sample_count, u32 channel_count) {
   assert(channel_count > 0 && channel_count < 3);
-  return (Audio) {
+  return (Sample) {
     .sample_rate = sample_rate,
     .sample_count = sample_count,
     .channel_count = channel_count,
@@ -17,10 +20,10 @@ Audio audio_alloc(Arena *arena, u32 sample_rate, u32 sample_count, u32 channel_c
   };
 }
 
-Audio audio_resample_fast(Arena *arena, Audio input, u32 output_rate) {
+Sample sample_resample_fast(Arena *arena, Sample input, u32 output_rate) {
   f32 input_duration = (f32) input.sample_count / (f32) input.sample_rate;
   u32 output_sample_count = input_duration * (f32) output_rate;
-  Audio output = audio_alloc(arena, output_rate, output_sample_count, input.channel_count);
+  Sample output = sample_alloc(arena, output_rate, output_sample_count, input.channel_count);
 
   if (input.channel_count == 1) {
     for (u32 i = 0; i < output.sample_count; ++i) {
@@ -42,7 +45,7 @@ Audio audio_resample_fast(Arena *arena, Audio input, u32 output_rate) {
   return output;
 }
 
-const f32 audio_filter_table[833] = {
+const f32 sample_filter_table[833] = {
   1.00000000e+00,  9.99598444e-01,  9.98394370e-01,  9.96389508e-01,
   9.93586838e-01,  9.89990354e-01,  9.85605121e-01,  9.80437636e-01,
   9.74495411e-01,  9.67786729e-01,  9.60321546e-01,  9.52110410e-01,
@@ -254,13 +257,13 @@ const f32 audio_filter_table[833] = {
   -3.36653017e-08
 };
 
-// audio_resmaple uses the bandlimited intrepolation algorithm described in
+// sample_resmaple uses the bandlimited intrepolation algorithm described in
 // docs/resample.pdf
-// This algorithme trims the first and last 13 samples from the original audio
-// out of the resampled audio. To avoid loosing these 13 samples you can set
+// This algorithme trims the first and last 13 samples from the original sample
+// out of the resampled sample. To avoid loosing these 13 samples you can set
 // `trim` to false. This will add 13 zeros and the start and the end of the
-// input audio. That way audio_resample will trim the 13 zeros instead of
-// trimming samples from the original audio.
+// input sample. That way sample_resample will trim the 13 zeros instead of
+// trimming samples from the original sample.
 // 
 // Time Register:
 // n_n = 24, n_l = 6, n_mu = 2
@@ -270,13 +273,13 @@ const f32 audio_filter_table[833] = {
 // N_z = 13
 // than mean len(filter_table) = N_z * 2^n_l + 1 = 833
 // also we drop the 13 first and last samples from input
-Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
+Sample sample_resample(Arena *arena, Sample input, u32 output_rate, b32 trim) {
   u32 Nz = 13;
   u32 L = 64;
 
   f32 rho = (f32) output_rate / (f32) input.sample_rate;
   u32 output_sample_count = trim ? (f32) (input.sample_count - 2*Nz) * rho : (f32) input.sample_count * rho;
-  Audio output = audio_alloc(arena, output_rate, output_sample_count, input.channel_count);
+  Sample output = sample_alloc(arena, output_rate, output_sample_count, input.channel_count);
 
   if (input.channel_count == 1) {
     if (trim) {
@@ -288,13 +291,13 @@ Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
 
         output.buf[i] = 0;
         for (usize j = 0; j < 13; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n - j] * h;
         }
         l = 63 - l;
         eta = 1 - eta;
         for (usize j = 0; j < 13; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n + 1 + j] * h;
         }
       }
@@ -307,13 +310,13 @@ Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
 
         output.buf[i] = 0;
         for (usize j = 0; j < 13 && n - j >= 0; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n - j] * h;
         }
         l = 63 - l;
         eta = 1 - eta;
         for (usize j = 0; j < 13 && n + 1 + j < input.sample_count; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n + 1 + j] * h;
         }
       }
@@ -328,14 +331,14 @@ Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
 
         output.buf[i] = 0;
         for (usize j = 0; j < 13; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n - j] * h;
           output.buf[output.sample_count + i] += input.buf[input.sample_count + n - j] * h;
         }
         l = 63 - l;
         eta = 1 - eta;
         for (usize j = 0; j < 13; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n + 1 + j] * h;
           output.buf[output.sample_count + i] += input.buf[input.sample_count + n + 1 + j] * h;
         }
@@ -349,14 +352,14 @@ Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
 
         output.buf[i] = 0;
         for (usize j = 0; j < 13 && n - j >= 0; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n - j] * h;
           output.buf[output.sample_count + i] += input.buf[input.sample_count + n - j] * h;
         }
         l = 63 - l;
         eta = 1 - eta;
         for (usize j = 0; j < 13; ++j) {
-          f32 h = (1 - eta) * audio_filter_table[l + j*L] + eta * audio_filter_table[l + j*L + 1];
+          f32 h = (1 - eta) * sample_filter_table[l + j*L] + eta * sample_filter_table[l + j*L + 1];
           output.buf[i] += input.buf[n + 1 + j] * h;
           output.buf[output.sample_count + i] += input.buf[input.sample_count + n + 1 + j] * h;
         }
@@ -367,70 +370,49 @@ Audio audio_resample(Arena *arena, Audio input, u32 output_rate, b32 trim) {
   return output;
 }
 
-void audio_context_play(AudioContext *context, Audio audio, f32 gain) {
-  assert(context->source_count + 1 <= AUDIO_CONTEXT_CAP);
-  assert(audio.sample_rate == AL_RATE);
-  context->source[context->source_count].gain = gain;
-  context->source[context->source_count].audio = audio;
-  context->source_count += 1;
+void audio_context_play_audio(AudioContext *context, Audio audio, f32 gain) {
+  assert(context->audio_count + 1 <= AC_AUDIO_CAP);
+  assert(audio.sample.sample_rate == AL_RATE);
+  context->audio[context->audio_count] = audio;
+  context->audio_gain[context->audio_count] = gain;
+  context->audio_count += 1;
 }
 
-void audio_context_remove(AudioContext *context, usize index) {
-  assert(index < context->source_count);
-  context->source[index].audio = context->source[context->source_count-1].audio;
-  context->source[index].gain = context->source[context->source_count-1].gain;
-  context->source[index].index = context->source[context->source_count-1].index;
-  context->source_count -= 1;
+void audio_context_remove_audio(AudioContext *context, usize index) {
+  assert(index < context->audio_count);
+  context->audio[index] = context->audio[context->audio_count-1];
+  context->audio_gain[index] = context->audio_gain[context->audio_count-1];
+  context->audio_count -= 1;
 }
 
 void audio_context_push_samples(Arena *arena, AudioContext *context) {
   ArenaTemp scratch = arena_scratch_get(arena);
 
   u32 channel_count = 1;
-  for (usize i = 0; i < context->source_count; ++i) {
-    if (context->source[i].audio.channel_count > channel_count) {
-      channel_count = context->source[i].audio.channel_count;
+  for (usize i = 0; i < context->audio_count; ++i) {
+    if (context->audio[i].sample.channel_count > channel_count) {
+      channel_count = context->audio[i].sample.channel_count;
     }
   }
-  assert(channel_count > 0 && channel_count < 2);
+  assert(channel_count == 1);
+  // assert(channel_count > 0 && channel_count < 2);
 
   f32 *buf = arena_push(scratch.arena, sizeof(f32) * channel_count * AL_BATCH_SIZE);
   mem_zero(buf, sizeof(f32) * channel_count * AL_BATCH_SIZE);
 
   // mixing
-  for (usize i = 0; i < context->source_count; ++i) {
-    Audio audio = context->source[i].audio;
-    f32 gain = context->source[i].gain;
+  for (usize i = 0; i < context->audio_count; ++i) {
+    Sample sample = context->audio[i].sample;
+    f32 gain = context->audio_gain[i];
 
-    if (channel_count == 1) {
-      for (usize j = 0; j < AL_BATCH_SIZE; ++j) {
-        if (context->source[i].index >= audio.sample_count) {
-          audio_context_remove(context, i);
-          i -= 1;
-          break;
-        }
-        buf[j] += audio.buf[context->source[i].index++] * gain;
+    assert(channel_count == 1);
+    for (usize j = 0; j < AL_BATCH_SIZE; ++j) {
+      if (context->audio[i].index >= sample.sample_count) {
+        audio_context_remove_audio(context, i);
+        i -= 1;
+        break;
       }
-    } else if (channel_count == 2 && audio.channel_count == 1) {
-      for (usize j = 0; j < AL_BATCH_SIZE; ++j) {
-        if (context->source[i].index >= audio.sample_count) {
-          audio_context_remove(context, i);
-          i -= 1;
-          break;
-        }
-        buf[j] += audio.buf[context->source[i].index++] * gain;
-        buf[AL_BATCH_SIZE + j] += audio.buf[context->source[i].index++] * gain;
-      }
-    } else {
-      for (usize j = 0; j < AL_BATCH_SIZE; ++j) {
-        if (context->source[i].index >= audio.sample_count) {
-          audio_context_remove(context, i);
-          i -= 1;
-          break;
-        }
-        buf[j] += audio.buf[context->source[i].index++] * gain;
-        buf[AL_BATCH_SIZE + j] += audio.buf[context->source[audio.sample_count + i].index++] * gain;
-      }
+      buf[j] += sample.buf[context->audio[i].index++] * gain;
     }
   }
 
