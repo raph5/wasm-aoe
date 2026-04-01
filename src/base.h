@@ -36,7 +36,7 @@ typedef i32 isize;
 #define MiB(n)  (((u64)(n)) << 20)
 #define GiB(n)  (((u64)(n)) << 30)
 
-#define NULL 0
+#define NULL (void *) 0
 #define true 1
 #define false 0
 
@@ -86,8 +86,9 @@ extern void gl_clear_screen(void);
 #define AL_RATE 32000
 #define AL_BATCH_SIZE 2048
 
-// pushes 2048 audio smaples from each channels to the host
+// pushes 2048 audio samples from each channels to the host
 // `first_channel` and `second_channel` can be equal
+// TODO: remove support for stereo
 extern void al_push_samples(f32 *first_channel, f32 *second_channel);
 
 // Memory operations //////////////////////////////////////////////////////////
@@ -142,69 +143,73 @@ void log_warn(const char *fmt, ...);
 void log_error(const char *fmt, ...);
 
 // Memory allocation //////////////////////////////////////////////////////////
+#define GPA_ALLOCATION_BLOCK_SIZE KiB(64)
+#define GPA_LIMIT MiB(512)
+#define GPA_FREE_LIST_NODE_CREATION_THRESHOLD 512
+typedef struct GpaFreeListNode GpaFreeListNode;
+struct GpaFreeListNode {
+  struct GpaFreeListNode *next;
+  usize block_size;
+};
 
-// The Memory Allocation Strategy:
-// Memory allocation happens via two permanent arenas, a blue and a red.
-// Underlying memory of an arena is divided into 16MiB blocks that are
-// dynamicaly allocated as the arena grows. This allows us to grow de memory
-// linearly instead of allocating the two arena upfront.
-//
-// A temporary arena can be created from a permanent arena by remembering an
-// initial block_idx and block_pos.
-// A temporary arena can extand on multiple blocks.
-// A temporary arena is then released by setting it permanent arena back to
-// back to its initial state (block_idx and block_pos).
-// Having two arenas and temporary arenas allows us to use a *scratch arena*
-// mechanism.
-//
-// See: https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator
-//
-// WARN: Having a scratch arena mechanism mean that you can't pass two
-// separate arenas as arguments to a function.
-
-#define ARENA_BLOCK_COUNT 128
-#define ARENA_BLOCK_SIZE MiB(64)
 typedef struct {
-  isize block_idx;
-  usize block_pos;
-  void *block_mem[ARENA_BLOCK_COUNT];
+  usize block_size;
+  u32 margin_before;
+  u32 margin_after;
+} GpaAllocationHeader;
+
+typedef struct {
+  void *start;
+  void *end;
+  GpaFreeListNode *free_list;
+} Gpa;
+
+#define ARENA_REGION_SIZE_DEFAULT KiB(64)
+typedef struct _ArenaRegion ArenaRegion;
+struct _ArenaRegion {
+  struct _ArenaRegion *next;
+  usize size;
+  usize pos;
+  u64 _[];  // to insure 8 bytes alignement
+};
+
+typedef struct {
+  Gpa *allocator;
+  usize region_size;
+  usize region_count;
+  ArenaRegion *begin, *end;
 } Arena;
 
 typedef struct {
   Arena *arena;
-  isize block_idx;
-  usize block_pos;
+  ArenaRegion *region;
+  usize pos;
 } ArenaTemp;
 
-Arena red_arena = { .block_idx = -1 };
-Arena blue_arena = { .block_idx = -1 };
+void gpa_init(Gpa *gpa);  // gpa must be initialized
+void *gpa_alloc(Gpa *gpa, usize size);
+void gpa_free(Gpa *gpa, void *ptr);
+f32 gpa_get_memory_fragmentation_coefficient(Gpa *gpa);
 
+void arena_destroy(Arena *arena);
+void arena_reset(Arena *arena);
 void *arena_push(Arena *arena, usize size);
-void *arena_push_aligned(Arena *arena, usize size, usize alignement);
-void arena_pop_to(Arena *arena, isize block_idx, usize block_pos);
 
 ArenaTemp arena_temp_get(Arena *arena);
 void arena_temp_release(ArenaTemp temp);
-
-ArenaTemp arena_scratch_get(Arena *permanent);
-void arena_scratch_release(ArenaTemp temp);
 
 // Binary data ////////////////////////////////////////////////////////////////
 u8 bin_read_byte(u8 **bin, usize *bin_len);
 void bin_read_bytes(u8 *out, usize len, u8 **bin, usize *bin_len);
 void bin_skip_bytes(usize len, u8 **bin, usize *bin_len);
+u8 bin_read_little_u8(u8 **bin, usize *bin_len);    // little endian
 u16 bin_read_little_u16(u8 **bin, usize *bin_len);  // little endian
 u32 bin_read_little_u32(u8 **bin, usize *bin_len);  // little endian
 u64 bin_read_little_u64(u8 **bin, usize *bin_len);  // little endian
-i16 bin_read_little_i16(u8 **bin, usize *bin_len);  // little endian
-i32 bin_read_little_i32(u8 **bin, usize *bin_len);  // little endian
-i64 bin_read_little_i64(u8 **bin, usize *bin_len);  // little endian
+u8 bin_read_big_u8(u8 **bin, usize *bin_len);    // big endian
 u16 bin_read_big_u16(u8 **bin, usize *bin_len);  // big endian
 u32 bin_read_big_u32(u8 **bin, usize *bin_len);  // big endian
 u64 bin_read_big_u64(u8 **bin, usize *bin_len);  // big endian
-i16 bin_read_big_i16(u8 **bin, usize *bin_len);  // big endian
-i32 bin_read_big_i32(u8 **bin, usize *bin_len);  // big endian
-i64 bin_read_big_i64(u8 **bin, usize *bin_len);  // big endian
 
 void bin_parse_fmt_v(u8 **bin, usize *bin_len, const char *fmt, va_list va);  // equivalent to scanf
 void bin_parse_fmt(u8 **bin, usize *bin_len, const char *fmt, ...);  // equivalent to scanf

@@ -38,10 +38,10 @@ void mem_cpy(void *dest, const void *src, usize len) {
 void mem_zero(void *dest, usize len) {
   usize i = 0;
   for (; i + 7 < len; i += 8) {
-    *(u64 *) (dest + i) = 123;
+    *(u64 *) (dest + i) = 0;
   }
   for (; i < len; i += 1) {
-    *(u8 *) (dest + i) = 123;
+    *(u8 *) (dest + i) = 0;
   }
 }
 
@@ -715,61 +715,258 @@ void log_error(const char *fmt, ...) {
 }
 
 // Memory allocation //////////////////////////////////////////////////////////
-void *arena_push(Arena *arena, usize size) {
-  assert(size <= ARENA_BLOCK_SIZE);
+usize gpa_calc_margin_for_header(uintptr_t ptr) {
+  usize align = 8;
+  usize m = (ptr + sizeof(GpaAllocationHeader)) % align;
+  if (m == 0) {
+    return sizeof(GpaAllocationHeader);
+  } else {
+    return sizeof(GpaAllocationHeader) + (align - m);
+  }
+}
 
-  if (arena->block_idx == -1 || size > ARENA_BLOCK_SIZE - arena->block_pos) {
-    arena->block_idx += 1;
-    arena->block_pos = 0;
-    if (arena->block_mem[arena->block_idx] == NULL) {
-      // surely, this will not fail
-      arena->block_mem[arena->block_idx] = plat_alloc(ARENA_BLOCK_SIZE);
+GpaFreeListNode *gpa_find_best_fit(Gpa *gpa, usize size, usize *_margin, GpaFreeListNode **_previous_node) {
+  assert(_margin && _previous_node);
+
+  isize best_fit = 0;
+  GpaFreeListNode *previous_node = NULL;
+  GpaFreeListNode *best_node = NULL;
+  GpaFreeListNode *node = gpa->free_list;
+
+  while (node != NULL) {
+    usize margin = gpa_calc_margin_for_header((uintptr_t) node);
+    isize fit = node->block_size - size - margin;
+    if (fit >= 0 && (best_node == NULL || fit < best_fit)) {
+      best_node = node;
+      best_fit = fit;
+      *_margin = margin;
+      *_previous_node = previous_node;
+    }
+    previous_node = node;
+    node = node->next;
+  }
+
+  return best_node;
+}
+
+static b32 gpa_init_has_been_called = false;
+void gpa_init(Gpa *gpa) {
+  if (gpa_init_has_been_called) {
+    log_warn("general purpose allocator: gpa_init was called two times");
+  }
+  gpa_init_has_been_called = true;
+
+  void *buf = plat_alloc(GPA_ALLOCATION_BLOCK_SIZE);
+  assert(buf != NULL);
+
+  GpaFreeListNode *first_node = buf;
+  first_node->block_size = GPA_LIMIT;
+  first_node->next = NULL;
+  *gpa = (Gpa) {
+    .start = buf,
+    .end = buf + GPA_ALLOCATION_BLOCK_SIZE,
+    .free_list = first_node,
+  };
+}
+
+void *gpa_alloc(Gpa *gpa, usize size) {
+  assert(gpa->start != NULL);
+
+  usize margin;
+  GpaFreeListNode *previous_node;
+  GpaFreeListNode *node = gpa_find_best_fit(gpa, size, &margin, &previous_node);
+  if (node == NULL) {
+    panic("general purpose allocator: memory allocation limit reached");
+  }
+
+  while ((void *) node + margin + size + sizeof(GpaFreeListNode) > gpa->end) {
+    void *buf = plat_alloc(GPA_ALLOCATION_BLOCK_SIZE);
+    assert(buf == gpa->end);
+    gpa->end += GPA_ALLOCATION_BLOCK_SIZE;
+  }
+
+  usize remaining = node->block_size - size - margin;
+  b32 do_create_new_node = remaining > GPA_FREE_LIST_NODE_CREATION_THRESHOLD;
+  if (do_create_new_node) {
+    GpaFreeListNode *new_node = (void *) node + size + margin;
+    new_node->block_size = node->block_size - size - margin;
+    new_node->next = node->next;
+    if (previous_node) {
+      previous_node->next = new_node;
+    } else {
+      gpa->free_list = new_node;
+    }
+  } else {
+    if (previous_node) {
+      previous_node->next = node->next;
+    } else {
+      gpa->free_list = node->next;
     }
   }
 
-  void *buf = arena->block_mem[arena->block_idx] + arena->block_pos;
-  arena->block_pos += size;
-  return buf;
+  GpaAllocationHeader *header = (void *) node + margin - sizeof(GpaAllocationHeader);
+  header->block_size = size;
+  header->margin_before = margin;
+  header->margin_after = do_create_new_node ? 0 : remaining;
+
+  void *result = node + margin;
+  assert(result >= (void *) &__heap_base);
+  return result;
 }
 
-void *arena_push_aligned(Arena *arena, usize size, usize alignement) {
-  usize offset = arena->block_pos % alignement;
-  if (offset != 0) {
-    arena_push(arena, alignement - offset);
+void gpa_free(Gpa *gpa, void *ptr) {
+  assert(gpa->start != NULL);
+  if (ptr == NULL) return;
+
+  GpaAllocationHeader *header = ptr - sizeof(GpaAllocationHeader);
+  GpaFreeListNode *free_node = ptr - header->margin_before;
+  free_node->block_size = header->margin_before + header->block_size + header->margin_after;
+  free_node->next = NULL;
+
+  GpaFreeListNode *previous_node = NULL;
+  GpaFreeListNode *node = gpa->free_list;
+  while (node != NULL) {
+    if (node >= free_node) {
+      assert((void *) free_node + free_node->block_size <= (void *) node);
+      assert((void *) previous_node + previous_node->block_size <= (void *) free_node);
+      break;
+    }
+    previous_node = node;
+    node = node->next;
   }
-  return arena_push(arena, size);
+
+  free_node->next = node;
+  if (previous_node == NULL) {
+    gpa->free_list = free_node;
+  } else {
+    previous_node->next = free_node;
+  }
+
+  if (node != NULL && (void *) free_node + free_node->block_size == node) {
+    free_node->block_size += node->block_size;
+    free_node->next = node->next;
+  }
+  if (previous_node != NULL && (void *) previous_node + previous_node->block_size == free_node) {
+    previous_node->block_size += free_node->block_size;
+    previous_node->next = free_node->next;
+  }
 }
 
-void arena_pop_to(Arena *arena, isize block_idx, usize block_pos) {
-  arena->block_idx = block_idx;
-  arena->block_pos = block_pos;
+f32 gpa_get_memory_fragmentation_coefficient(Gpa *gpa) {
+  if (gpa->free_list == NULL || gpa->free_list->next == NULL) {
+    return 0;
+  }
+
+  usize empty = 0;
+  GpaFreeListNode *node = gpa->free_list;
+  while (node->next != NULL) {
+    empty += node->block_size;
+  }
+
+  usize used = (void *) node - gpa->start;
+  return (f32) empty / used;
+}
+
+void arena_init(Arena *arena) {
+  assert(arena->allocator);
+  if (arena->region_size == 0) {
+    arena->region_size = ARENA_REGION_SIZE_DEFAULT;
+  } else if (arena->region_size % 8 != 0) {
+    panic("arena allocator: arena->region_size should be 8 bytes aligned");
+  }
+  ArenaRegion *region = gpa_alloc(arena->allocator, sizeof(ArenaRegion) + arena->region_size);
+  assert(region != NULL);
+  *region = (ArenaRegion) {
+    .size = arena->region_size,
+    .pos = 0,
+    .next = NULL,
+  };
+  arena->begin = region;
+  arena->end = region;
+  arena->region_count = 1;
+}
+
+void *arena_push(Arena *arena, usize size_unaligned) {
+  if (arena->begin == NULL) {
+    arena_init(arena);
+  }
+
+  usize size = (size_unaligned + 7) / 8 * 8;
+  if (size > (usize) (0.8 * arena->region_size)) {
+    log_warn("arena allocator: allocation of size %u64 is reaching 80% of the arena default region size. you may want to increase this arena default region size", size);
+  }
+  if (arena->region_count >= 16) {
+    log_warn("arena allocator: you have reached %u64 regions on this arena. you may want to increase it's region size", arena->region_count);
+  }
+
+  while (arena->end->next != NULL && arena->end->pos + size > arena->end->size) {
+    arena->end = arena->end->next;
+  }
+
+  if (arena->end->pos + size > arena->end->size) {
+    usize region_size = arena->region_size;
+    while (region_size < size) {
+      region_size += arena->region_size;
+    }
+    ArenaRegion *new_region = gpa_alloc(arena->allocator, sizeof(ArenaRegion) + region_size);
+    *new_region = (ArenaRegion) {
+      .size = region_size,
+      .pos = 0,
+      .next = NULL,
+    };
+    arena->end->next = new_region;
+    arena->end = new_region;
+    arena->region_count += 1;
+  }
+
+  void *result = (void *) arena->end + sizeof(ArenaRegion) + arena->end->pos;
+  arena->end->pos += size;
+  assert(result >= (void *) &__heap_base);
+  return result;
+}
+
+void arena_destroy(Arena *arena) {
+  ArenaRegion *region = arena->begin;
+  while (region != NULL) {
+    ArenaRegion *next_region = region->next;
+    gpa_free(arena->allocator, region);
+    region = next_region;
+  }
+  arena->begin = NULL;
+  arena->end = NULL;
+  arena->region_count = 0;
+}
+
+void arena_reset(Arena *arena) {
+  ArenaRegion *region = arena->begin;
+  while (region != NULL) {
+    region->pos = 0;
+    region = region->next;
+  }
+  arena->end = arena->begin;
 }
 
 ArenaTemp arena_temp_get(Arena *arena) {
   return (ArenaTemp) {
     .arena = arena,
-    .block_idx = arena->block_idx,
-    .block_pos = arena->block_pos,
+    .region = arena->end,
+    .pos = arena->end == NULL ? 0 : arena->end->pos,
   };
 }
 
 void arena_temp_release(ArenaTemp temp) {
-  temp.arena->block_idx = temp.block_idx;
-  temp.arena->block_pos = temp.block_pos;
-}
-
-ArenaTemp arena_scratch_get(Arena *permanent) {
-  if (permanent == &red_arena) {
-    return arena_temp_get(&blue_arena);
-  } else if (permanent == &blue_arena) {
-    return arena_temp_get(&red_arena);
-  } else {
-    panic("unknown permanent arena");
+  if (temp.region == NULL) {
+    arena_reset(temp.arena);
+    return;
   }
-}
 
-void arena_scratch_release(ArenaTemp temp) {
-  arena_temp_release(temp);
+  temp.region->pos = temp.pos;
+  ArenaRegion *region = temp.region->next;
+  while (region != NULL) {
+    region->pos = 0;
+    region = region->next;
+  }
+  temp.arena->end = temp.region;
 }
 
 // Binary data ////////////////////////////////////////////////////////////////
@@ -792,6 +989,18 @@ void bin_skip_bytes(usize len, u8 **bin, usize *bin_len) {
   assert(*bin_len >= len);
   *bin += len;
   *bin_len -= len;
+}
+
+u8 bin_read_little_u8(u8 **bin, usize *bin_len) {
+  assert(*bin_len >= 1);
+  u8 n = **bin;
+  *bin += 1;
+  *bin_len -= 1;
+  return n;
+}
+
+u8 bin_read_big_u8(u8 **bin, usize *bin_len) {
+  return bin_read_little_u8(bin, bin_len);
 }
 
 u16 bin_read_little_u16(u8 **bin, usize *bin_len) {
@@ -818,18 +1027,6 @@ u64 bin_read_little_u64(u8 **bin, usize *bin_len) {
   return *(u32 *) n;
 }
 
-i16 bin_read_little_i16(u8 **bin, usize *bin_len) {
-  return bin_read_little_u16(bin, bin_len);
-}
-
-i32 bin_read_little_i32(u8 **bin, usize *bin_len) {
-  return bin_read_little_u32(bin, bin_len);
-}
-
-i64 bin_read_little_i64(u8 **bin, usize *bin_len) {
-  return bin_read_little_u64(bin, bin_len);
-}
-
 u16 bin_read_big_u16(u8 **bin, usize *bin_len) {
   assert(*bin_len >= 2);
   u8 n[] = { *(*bin + 1), **bin };
@@ -852,18 +1049,6 @@ u64 bin_read_big_u64(u8 **bin, usize *bin_len) {
   *bin += 8;
   *bin_len -= 8;
   return *(u32 *) n;
-}
-
-i16 bin_read_big_i16(u8 **bin, usize *bin_len) {
-  return bin_read_big_u16(bin, bin_len);
-}
-
-i32 bin_read_big_i32(u8 **bin, usize *bin_len) {
-  return bin_read_big_u32(bin, bin_len);
-}
-
-i64 bin_read_big_i64(u8 **bin, usize *bin_len) {
-  return bin_read_big_u64(bin, bin_len);
 }
 
 u64 bin_parse_u64(u8 **bin, usize *bin_len) {

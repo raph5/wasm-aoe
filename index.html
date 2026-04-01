@@ -245,7 +245,7 @@ async function al_init() {
   });
 }
 
-// pushes AL_BATCH_SIZE audio smaples from each channels to the host
+// pushes AL_BATCH_SIZE audio samples from each channels to the host
 // `first_channel` and `second_channel` can be equal
 function al_push_samples(first_channel, second_channel) {
   const mem = wasm.instance.exports.memory.buffer;

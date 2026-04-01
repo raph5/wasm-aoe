@@ -6,6 +6,7 @@
  */
 
 #include "src/assets/midi.h"
+#include "src/base.h"
 
 // read variable length quantity
 u32 bin_read_vlq(u8 **bin, usize *bin_len) {
@@ -113,10 +114,10 @@ MidiHeader *midi_parse_header(Arena *arena, u8 *bin, usize bin_len) {
   u16 division = bin_read_big_u16(&bin, &bin_len);
   assert(format == 0 || format == 1);
   assert((division & 0x8000) == 0);
-  assert(track_count <= 16);  // actually not a big deal of track_count > 16
+  assert(track_count <= MIDI_TRACK_MAX);
 
-  MidiHeader *header = arena_push(arena, sizeof(MidiHeader) + track_count * sizeof(MidiTrackHeader));
-  header->division = division;
+  MidiHeader *header = arena_push(arena, sizeof(MidiHeader));
+  header->tick_per_quater_note = division;
   header->track_count = track_count;
 
   for (usize i = 0; i < track_count; ++i) {
@@ -209,4 +210,131 @@ void midi_print_track(MidiHeader *header, usize track_index) {
         panic("invalid running status %u8", running_status);
     }
   }
+}
+
+// Yields the first even that happens before the time indicated my `before`. 
+// `before` is expressed in microseconds since the begining of the song. If
+// no event can be yield, midi_player_yield_event returns false.
+// `ended` is set to true if all events of the MidiPlayer have been yeilded,
+// `ended` is set to false otherwise.
+b32 midi_player_yield_event(MidiPlayer *player, MidiEvent *event, u64 before, b32 *ended) {
+  u8 *track_buf = player->header->track[player->track_index].buf;
+  usize track_buf_len = player->header->track[player->track_index].buf_len;
+  if (player->buf_index >= track_buf_len) {
+    *ended = true;
+    return false;
+  }
+  u8 *bin = track_buf + player->buf_index;
+  usize bin_len = track_buf_len - player->buf_index;
+
+  u32 delta_tick = bin_read_vlq(&bin, &bin_len);
+  u32 tick = player->time + delta_tick;
+  u64 time = 0;
+  if (tick != 0) {
+    assert(player->microsec_per_quater_note != 0);
+    time = (u64) tick * (u64) player->microsec_per_quater_note / player->header->tick_per_quater_note;
+    if (time >= before) {
+      *ended = false;
+      return false;
+    }
+  } 
+
+  u8 byte = bin_read_byte(&bin, &bin_len);
+  if (byte & 0x80) {
+    if (byte == 0xf0 || byte == 0xf7) {
+      u32 sysex_len = bin_read_vlq(&bin, &bin_len);
+      bin_skip_bytes(sysex_len, &bin, &bin_len);
+      panic("midi player: sysex events are not supported");
+    } else if (byte == 0xff) {
+      u8 meta_type = bin_read_byte(&bin, &bin_len);
+      u32 meta_len = bin_read_vlq(&bin, &bin_len);
+      assert(meta_len < KiB(1));
+
+      switch (meta_type) {
+        case 0x51: {  // Set Tempo
+          assert(meta_len == 3);
+          u8 meta_bytes[3];
+          bin_read_bytes(meta_bytes, meta_len, &bin, &bin_len);
+          player->microsec_per_quater_note = meta_bytes[2] + (meta_bytes[1] << 8) + (meta_bytes[0] << 16);
+          break;
+        }
+
+        case 0x2f: {  // End of track
+          assert(meta_len == 0);
+          *ended = true;
+          return false;
+        }
+
+        case 0x03:  // Sequence/Track Name (ascii text)
+        case 0x06:  // Marker (ascii text)
+        case 0x54:  // SMPTE Offset (I don't realy know what that mean)
+        case 0x58:  // Time Signature
+        case 0x59:  // Key Signature
+          bin_skip_bytes(meta_len, &bin, &bin_len);
+          break;
+        default:
+          panic("midi player: unsupported meta event type %u8", meta_type);
+      }
+
+      return midi_player_yield_event(player, event, before, ended);
+    } else {
+      player->running_status = byte;
+      byte = bin_read_byte(&bin, &bin_len);
+    }
+  }
+
+  *ended = false;
+  *event = (MidiEvent) {
+    .time = time,
+    .channel = player->running_status & 0x0f,
+  };
+  switch (player->running_status & 0xf0) {
+    case 0x80: {  // Note Off event
+      panic("midi player: note off event not supported");
+      break;
+    }
+    case 0x90: {  // Note On Event
+      u8 key = byte;
+      u8 velocity = bin_read_byte(&bin, &bin_len);
+      assert(!(key & 0x80) && !(velocity & 0x80));
+      event->type = ME_NOTE_ON;
+      event->data.note_on.key = key;
+      event->data.note_on.velocity = velocity;
+      break;
+    }
+    case 0xa0: {  // Polyphonic Key Pressure (Aftertouch)
+      panic("midi player: polyphonic key pressure event not supported");
+      break;
+    }
+    case 0xb0: {  // Control Change
+      u8 controller = byte;
+      u8 value = bin_read_byte(&bin, &bin_len);
+      assert(!(controller & 0x80) && !(value & 0x80));
+      event->type = ME_CONTROL_CHANGE;
+      event->data.control_change.controller = controller;
+      event->data.control_change.value = value;
+      break;
+    }
+    case 0xc0: {  // Program Change
+      u8 program = byte;
+      assert(!(program & 0x80));
+      event->type = ME_PROGRAM_CHANGE;
+      event->data.program_change.program = program;
+      break;
+    }
+    case 0xd0: {  // Channel Pressure (After-touch)
+      panic("midi player: channel pressure event not supported");
+    }
+    case 0xe0: {  // Pitch Wheel Change
+      u8 least = byte;
+      u8 most = bin_read_byte(&bin, &bin_len);
+      assert(!(least & 0x80) && !(most & 0x80));
+      event->type = ME_PITCH_CHANGE;
+      event->data.pitch_change.pitch = least + (most << 7);
+      break;
+    }
+    default:
+      panic("midi player: invalid running status %u8", player->running_status);
+  }
+  return true;
 }

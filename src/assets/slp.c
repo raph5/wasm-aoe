@@ -47,10 +47,10 @@ SlpHeader *slp_parse_header(Arena *arena, u8 *bin, usize bin_len) {
     u32 outline_table_offset = bin_read_little_u32(&bin, &bin_len);
     bin_skip_bytes(4, &bin, &bin_len);
     u32 properties = bin_read_little_u32(&bin, &bin_len);
-    i32 width = bin_read_little_i32(&bin, &bin_len);
-    i32 height = bin_read_little_i32(&bin, &bin_len);
-    i32 center_x = bin_read_little_i32(&bin, &bin_len);
-    i32 center_y = bin_read_little_i32(&bin, &bin_len);
+    i32 width = bin_read_little_u32(&bin, &bin_len);
+    i32 height = bin_read_little_u32(&bin, &bin_len);
+    i32 center_x = bin_read_little_u32(&bin, &bin_len);
+    i32 center_y = bin_read_little_u32(&bin, &bin_len);
     assert(outline_table_offset < start_bin_len);
     assert(cmd_table_offset < start_bin_len);
 

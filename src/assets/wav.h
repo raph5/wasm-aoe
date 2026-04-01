@@ -15,11 +15,10 @@ typedef struct {
   u32 sample_rate;
   u32 sample_count;
   u8 *data;
-  u8 channel_count;
   u8 bits_per_sample;
 } WavHeader;
 
 WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len);
-Sample wav_decode(Arena *arena, WavHeader *header);
+Wave wav_decode(Arena *arena, WavHeader *header);
 
 #endif

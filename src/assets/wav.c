@@ -29,8 +29,8 @@ WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len) {
   if (format_audio_format != 1) {
     panic("wav_parse_header: format %u16 not supported", format_audio_format);
   }
-  if (format_channel_count < 1 || format_channel_count > 2) {
-    panic("wav_parse_header: more that two channels not supported", format_channel_count);
+  if (format_channel_count != 1) {
+    panic("wav_parse_header: stereo is not supported", format_channel_count);
   }
   if (format_sample_rate > AL_RATE) {
     panic("wav_parse_header: sample rate higher than AL_RATE are not supported", format_sample_rate);
@@ -41,7 +41,6 @@ WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len) {
   assert(format_byte_rate == format_sample_rate * format_channel_count * format_bits_per_sample/8);
   assert(format_byte_per_block == format_channel_count * format_bits_per_sample/8);
   header->sample_rate = format_sample_rate;
-  header->channel_count = format_channel_count;
   header->bits_per_sample = format_bits_per_sample;
 
   bin_parse_fmt(&bin, &bin_len, "data");
@@ -56,19 +55,15 @@ WavHeader *wav_parse_header(Arena *arena, u8 *bin, usize bin_len) {
   return header;
 }
 
-Sample wav_decode_mono_16_bits(Arena *arena, WavHeader *header) {
-  Sample sample = sample_alloc(arena, header->sample_rate, header->sample_count, header->channel_count);
-  for (usize i = 0; i < header->sample_count; ++i) {
-    // WAV data is little endian like wasm
-    i16 n = ((i16 *) header->data)[i];
-    sample.buf[i] = (f32) n / 32768.0f / 2;
-  }
-  return sample;
-}
-
-Sample wav_decode(Arena *arena, WavHeader *header) {
-  if (header->channel_count == 1 && header->bits_per_sample == 16) {
-    return wav_decode_mono_16_bits(arena, header);
+Wave wav_decode(Arena *arena, WavHeader *header) {
+  if (header->bits_per_sample == 16) {
+    Wave wave = wave_alloc(arena, header->sample_rate, header->sample_count);
+    for (usize i = 0; i < header->sample_count; ++i) {
+      // WAV data is little endian like wasm
+      i16 n = ((i16 *) header->data)[i];
+      wave.buf[i] = (f32) n / 32768.0f / 2;
+    }
+    return wave;
   } else {
     // TODO: implement 8 bits wav decoder
     panic("wav_decode: not implemented");
